@@ -1,0 +1,88 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Production {
+  id        String   @id @default(cuid())
+  title     String
+  idea      String
+  status    String   @default("draft")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  storyPlans ScenePlan[]
+  storyPlan  StoryPlan[]
+  shotPlans  ShotPlan[]
+}
+
+model StoryPlan {
+  id        String   @id @default(cuid())
+  productionId String
+  production Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+
+  title     String
+  logline   String
+  genre     String
+  tone      String
+  premise   String
+  acts      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scenePlans ScenePlan[]
+  shotPlans  ShotPlan[]
+}
+
+model ScenePlan {
+  id        String   @id @default(cuid())
+  productionId String
+  production Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  storyPlanId String
+  storyPlan StoryPlan @relation(fields: [storyPlanId], references: [id], onDelete: Cascade)
+
+  sceneNumber Int
+  title String
+  setting String
+  objective String
+  conflict String
+  cinematicNotes String
+  transition String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shots ShotPlan[]
+
+  @@unique([storyPlanId, sceneNumber])
+}
+
+model ShotPlan {
+  id        String   @id @default(cuid())
+  productionId String
+  production Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  storyPlanId String
+  storyPlan StoryPlan @relation(fields: [storyPlanId], references: [id], onDelete: Cascade)
+  scenePlanId String
+  scenePlan ScenePlan @relation(fields: [scenePlanId], references: [id], onDelete: Cascade)
+
+  sceneNumber Int
+  shotNumber Int
+  description String
+  camera String
+  lens String
+  movement String
+  composition String
+  durationSeconds Int
+  visualNotes String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([scenePlanId, shotNumber])
+}

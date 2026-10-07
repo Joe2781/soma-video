@@ -12,8 +12,7 @@ node_modules/
 logs/
 *.log
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+yarn-debug.log*\nyarn-error.log*
 
 # Build outputs
 build/
@@ -30,13 +29,13 @@ out/
 .DS_Store
 
 # Testing
-.coverage/
+coverage/
 .nyc_output/
 *.lcov
 
-# Database
-*.db
-*.sqlite
+# Prisma
+prisma/dev.db
+prisma/dev.db-journal
 
 # Temporary
 .cache/
