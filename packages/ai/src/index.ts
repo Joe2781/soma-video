@@ -40,10 +40,38 @@ const DirectorPlanSchema = z.object({
   shots: z.array(DirectorShotSchema).min(10),
 });
 
+const ScreenplaySceneSchema = z.object({
+  sceneNumber: z.number().int().positive(),
+  heading: z.string().min(2),
+  location: z.string().min(2),
+  timeOfDay: z.string().min(2),
+  visualBeat: z.string().min(10),
+  action: z.string().min(20),
+  dialogue: z.string().min(20),
+  continuityNotes: z.array(z.string().min(5)).min(1),
+});
+
+const ScreenplayPlanSchema = z.object({
+  title: z.string().min(2),
+  logline: z.string().min(10),
+  scenes: z.array(ScreenplaySceneSchema).min(1),
+});
+
+const ContinuityWarningSchema = z.object({
+  issue: z.string().min(5),
+  severity: z.enum(['low', 'medium', 'high']),
+  sceneNumber: z.number().int().positive(),
+  recommendation: z.string().min(5),
+});
+
 export type DirectorShot = z.infer<typeof DirectorShotSchema>;
 export type DirectorScene = z.infer<typeof DirectorSceneSchema>;
 export type DirectorAct = z.infer<typeof DirectorActSchema>;
 export type DirectorPlan = z.infer<typeof DirectorPlanSchema>;
+
+export type ScreenplayScene = z.infer<typeof ScreenplaySceneSchema>;
+export type ScreenplayPlan = z.infer<typeof ScreenplayPlanSchema>;
+export type ContinuityWarning = z.infer<typeof ContinuityWarningSchema>;
 
 function normalizeGeminiResponse(raw: string): DirectorPlan {
   const cleaned = raw
@@ -55,11 +83,10 @@ function normalizeGeminiResponse(raw: string): DirectorPlan {
   const parsed = JSON.parse(cleaned) as unknown;
   const validated = DirectorPlanSchema.parse(parsed);
 
-  // Keep the plan logically consistent even when a model returns out-of-range data.
   const shotsByScene = new Map<number, number>();
   for (const shot of validated.shots) {
-    const sceneCount = shotsByScene.get(shot.sceneNumber) ?? 0;
-    shotsByScene.set(shot.sceneNumber, sceneCount + 1);
+    const count = shotsByScene.get(shot.sceneNumber) ?? 0;
+    shotsByScene.set(shot.sceneNumber, count + 1);
   }
 
   if (Math.min(...shotsByScene.values()) < 2) {
@@ -157,4 +184,150 @@ Return a single JSON object only.
     const message = error instanceof Error ? error.message : 'Unknown validation error';
     throw new Error(`Gemini returned an invalid plan: ${message}`);
   }
+}
+
+export async function generateScreenplayPlan(
+  idea: string,
+  title: string,
+  directorPlan?: DirectorPlan,
+  options?: {
+    model?: string;
+    apiKey?: string;
+  }
+): Promise<ScreenplayPlan> {
+  const apiKey = options?.apiKey ?? process.env.GEMINI_API_KEY;
+  const model = options?.model ?? process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
+
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured. Set the real Google Gemini API key before using the screenplay planner.');
+  }
+
+  const systemPrompt = `You are the screenplay writer for Soma Video. Produce a structured screenplay based on the story plan.
+
+Requirements:
+- Output only valid JSON.
+- Include title, logline, and scenes.
+- Each scene must have sceneNumber, heading, location, timeOfDay, visualBeat, action, dialogue, and continuityNotes.
+- The scenes must match the structure of the provided plan.
+- Use professional screenplay prose but keep JSON text easy to store.
+`;
+
+  const userPrompt = `
+User idea: ${idea}
+Working title: ${title}
+Director plan: ${JSON.stringify(directorPlan ?? { title, logline: 'Not provided yet' })}
+Write a screenplay plan that preserves the core story, pacing, tension, and continuity.
+Return a single JSON object only.
+`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      contents: [{ parts: [{ text: userPrompt }] }],
+      generationConfig: {
+        temperature: 0.75,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new Error(`Gemini screenplay request failed (${response.status}): ${raw}`);
+  }
+
+  const payload = (await response.json()) as any;
+  const text = payload?.candidates?.[0]?.content?.parts
+    ?.map((part: any) => part?.text ?? '')
+    .join('')
+    ?.trim();
+
+  if (!text) {
+    throw new Error('Gemini returned no screenplay content.');
+  }
+
+  const cleaned = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+
+  const parsed = JSON.parse(cleaned) as unknown;
+  const validated = ScreenplayPlanSchema.parse(parsed);
+  return validated;
+}
+
+export function validateContinuity(
+  screenplay: ScreenplayPlan,
+  directorPlan?: DirectorPlan
+): ContinuityWarning[] {
+  const warnings: ContinuityWarning[] = [];
+
+  if (!screenplay || !screenplay.scenes?.length) {
+    warnings.push({
+      issue: 'No screenplay scenes were provided for continuity validation.',
+      severity: 'high',
+      sceneNumber: 1,
+      recommendation: 'Generate a screenplay before validation.',
+    });
+    return warnings;
+  }
+
+  const sceneNumbers = screenplay.scenes.map((scene) => scene.sceneNumber);
+  const duplicates = sceneNumbers.filter((num, idx) => sceneNumbers.indexOf(num) !== idx);
+  if (duplicates.length > 0) {
+    warnings.push({
+      issue: 'Duplicate scene numbers detected in the screenplay.',
+      severity: 'high',
+      sceneNumber: duplicates[0],
+      recommendation: 'Renumber scenes so each screenplay scene is unique.',
+    });
+  }
+
+  for (const scene of screenplay.scenes) {
+    if (!scene.action || scene.action.length < 20) {
+      warnings.push({
+        issue: `Scene ${scene.sceneNumber} lacks enough action detail.`,
+        severity: 'medium',
+        sceneNumber: scene.sceneNumber,
+        recommendation: 'Expand the visual action in this scene to preserve continuity and clarity.',
+      });
+    }
+
+    if (!scene.continuityNotes || scene.continuityNotes.length === 0) {
+      warnings.push({
+        issue: `Scene ${scene.sceneNumber} has no continuity notes.`,
+        severity: 'medium',
+        sceneNumber: scene.sceneNumber,
+        recommendation: 'Add continuity notes for props, wardrobe, geography, and emotional state.',
+      });
+    }
+  }
+
+  if (directorPlan) {
+    const directorSceneNumbers = directorPlan.scenes.map((scene) => scene.sceneNumber);
+    const screenplaySceneNumbers = screenplay.scenes.map((scene) => scene.sceneNumber);
+    const missingFromScreenplay = directorSceneNumbers.filter(
+      (num) => !screenplaySceneNumbers.includes(num)
+    );
+
+    if (missingFromScreenplay.length > 0) {
+      warnings.push({
+        issue: 'Some director scenes do not appear in the screenplay.',
+        severity: 'high',
+        sceneNumber: missingFromScreenplay[0],
+        recommendation: 'Ensure every planned director scene is represented in the screenplay.',
+      });
+    }
+  }
+
+  return warnings;
 }
