@@ -18,9 +18,10 @@ model Production {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  storyPlan StoryPlan?
-  scenePlans ScenePlan[]
-  shotPlans  ShotPlan[]
+  storyPlan      StoryPlan?
+  screenplayPlan ScreenplayPlan?
+  scenePlans     ScenePlan[]
+  shotPlans      ShotPlan[]
 }
 
 model StoryPlan {
@@ -39,6 +40,43 @@ model StoryPlan {
 
   scenePlans ScenePlan[]
   shotPlans  ShotPlan[]
+}
+
+model ScreenplayPlan {
+  id        String   @id @default(cuid())
+  productionId String  @unique
+  production   Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  storyPlanId String
+  storyPlan   StoryPlan? @relation(fields: [storyPlanId], references: [id], onDelete: SetNull)
+
+  title String
+  logline String
+  continuityWarnings Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scenes ScreenplayScene[]
+}
+
+model ScreenplayScene {
+  id                String   @id @default(cuid())
+  productionId      String
+  production        Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  screenplayPlanId  String
+  screenplayPlan    ScreenplayPlan @relation(fields: [screenplayPlanId], references: [id], onDelete: Cascade)
+
+  sceneNumber       Int
+  heading           String
+  location          String
+  timeOfDay         String
+  visualBeat        String
+  action            String
+  dialogue          String
+  continuityNotes   Json
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([screenplayPlanId, sceneNumber])
 }
 
 model ScenePlan {
