@@ -64,6 +64,24 @@ const ContinuityWarningSchema = z.object({
   recommendation: z.string().min(5),
 });
 
+const ShotPlanItemSchema = z.object({
+  sceneNumber: z.number().int().positive(),
+  shotNumber: z.number().int().positive(),
+  description: z.string().min(10),
+  camera: z.string().min(2),
+  lens: z.string().min(2),
+  movement: z.string().min(2),
+  composition: z.string().min(2),
+  durationSeconds: z.number().int().min(2).max(15),
+  visualNotes: z.string().min(5),
+});
+
+const ShotPlanSchema = z.object({
+  title: z.string().min(2),
+  logline: z.string().min(10),
+  shots: z.array(ShotPlanItemSchema).min(1),
+});
+
 export type DirectorShot = z.infer<typeof DirectorShotSchema>;
 export type DirectorScene = z.infer<typeof DirectorSceneSchema>;
 export type DirectorAct = z.infer<typeof DirectorActSchema>;
@@ -72,6 +90,8 @@ export type DirectorPlan = z.infer<typeof DirectorPlanSchema>;
 export type ScreenplayScene = z.infer<typeof ScreenplaySceneSchema>;
 export type ScreenplayPlan = z.infer<typeof ScreenplayPlanSchema>;
 export type ContinuityWarning = z.infer<typeof ContinuityWarningSchema>;
+export type ShotPlanItem = z.infer<typeof ShotPlanItemSchema>;
+export type ShotPlan = z.infer<typeof ShotPlanSchema>;
 
 function normalizeGeminiResponse(raw: string): DirectorPlan {
   const cleaned = raw
@@ -89,7 +109,7 @@ function normalizeGeminiResponse(raw: string): DirectorPlan {
     shotsByScene.set(shot.sceneNumber, count + 1);
   }
 
-  if (Math.min(...shotsByScene.values()) < 2) {
+  if (shotsByScene.size === 0 || Math.min(...shotsByScene.values()) < 2) {
     throw new Error('Generated plan must contain at least 2 shots per scene.');
   }
 
@@ -321,4 +341,85 @@ export function validateContinuity(
   }
 
   return warnings;
+}
+
+export async function generateShotPlan(
+  idea: string,
+  title: string,
+  directorPlan?: DirectorPlan,
+  screenplayPlan?: ScreenplayPlan,
+  options?: {
+    model?: string;
+    apiKey?: string;
+  }
+): Promise<ShotPlan> {
+  const apiKey = options?.apiKey ?? process.env.GEMINI_API_KEY;
+  const model = options?.model ?? process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
+
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured. Set the real Google Gemini API key before using the shot planner.');
+  }
+
+  const systemPrompt = `You are the Director of Photography for Soma Video. Turn the screenplay and story plan into a production-ready shot list.
+
+Requirements:
+- Output valid JSON only.
+- Include title, logline, and shots.
+- Each shot must include sceneNumber, shotNumber, description, camera, lens, movement, composition, durationSeconds, and visualNotes.
+- Each scene should have 2 to 4 shots.
+- The shots must support the scene objective and continuity.
+- Keep shot descriptions cinematic and practical.
+`;
+
+  const userPrompt = `
+User idea: ${idea}
+Working title: ${title}
+Director plan: ${JSON.stringify(directorPlan ?? { title, logline: 'Not provided yet' })}
+Screenplay plan: ${JSON.stringify(screenplayPlan ?? { title, logline: 'Not provided yet', scenes: [] })}
+Create a practical shot list that is consistent with the scene progression, pacing, and continuity.
+Return a single JSON object only.
+`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      contents: [{ parts: [{ text: userPrompt }] }],
+      generationConfig: {
+        temperature: 0.7,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new Error(`Gemini shot planner request failed (${response.status}): ${raw}`);
+  }
+
+  const payload = (await response.json()) as any;
+  const text = payload?.candidates?.[0]?.content?.parts
+    ?.map((part: any) => part?.text ?? '')
+    .join('')
+    ?.trim();
+
+  if (!text) {
+    throw new Error('Gemini returned no shot plan content.');
+  }
+
+  const cleaned = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+
+  const parsed = JSON.parse(cleaned) as unknown;
+  return ShotPlanSchema.parse(parsed);
 }
