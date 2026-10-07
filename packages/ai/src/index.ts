@@ -108,9 +108,7 @@ export async function generateDirectorPlan(
   const model = options?.model ?? process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
 
   if (!apiKey) {
-    throw new Error(
-      'GEMINI_API_KEY is not configured. Set the real Google Gemini API key in .env before using the AI Director.'
-    );
+    throw new Error('GEMINI_API_KEY is not configured. Set the real Google Gemini API key in .env before using the AI Director.');
   }
 
   if (!idea || !idea.trim()) {
@@ -149,11 +147,7 @@ Return a single JSON object only.
       systemInstruction: {
         parts: [{ text: systemPrompt }],
       },
-      contents: [
-        {
-          parts: [{ text: userPrompt }],
-        },
-      ],
+      contents: [{ parts: [{ text: userPrompt }] }],
       generationConfig: {
         temperature: 0.7,
         topP: 0.95,
@@ -261,8 +255,7 @@ Return a single JSON object only.
     .trim();
 
   const parsed = JSON.parse(cleaned) as unknown;
-  const validated = ScreenplayPlanSchema.parse(parsed);
-  return validated;
+  return ScreenplayPlanSchema.parse(parsed);
 }
 
 export function validateContinuity(
@@ -315,9 +308,7 @@ export function validateContinuity(
   if (directorPlan) {
     const directorSceneNumbers = directorPlan.scenes.map((scene) => scene.sceneNumber);
     const screenplaySceneNumbers = screenplay.scenes.map((scene) => scene.sceneNumber);
-    const missingFromScreenplay = directorSceneNumbers.filter(
-      (num) => !screenplaySceneNumbers.includes(num)
-    );
+    const missingFromScreenplay = directorSceneNumbers.filter((num) => !screenplaySceneNumbers.includes(num));
 
     if (missingFromScreenplay.length > 0) {
       warnings.push({
