@@ -1,7 +1,11 @@
 {
   "name": "soma-video",
-  "private": true,
   "version": "0.1.0",
+  "description": "AI film-production application",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -9,11 +13,13 @@
   "scripts": {
     "dev": "npm run --workspace apps/api dev",
     "build": "npm run --workspaces build",
-    "type-check": "npm run --workspaces type-check",
+    "test": "npm run --workspaces test",
     "lint": "npm run --workspaces lint",
-    "db:generate": "npm run --workspace packages/db prisma:generate",
-    "db:migrate": "npm run --workspace packages/db prisma:migrate",
-    "db:studio": "npm run --workspace packages/db prisma:studio"
+    "type-check": "npm run --workspaces type-check",
+    "db:generate": "cd packages/db && npx prisma generate",
+    "db:migrate": "cd packages/db && npx prisma migrate dev",
+    "db:push": "cd packages/db && npx prisma db push",
+    "db:studio": "cd packages/db && npx prisma studio"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
