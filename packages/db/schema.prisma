@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -43,38 +40,38 @@ model StoryPlan {
 }
 
 model ScreenplayPlan {
-  id        String   @id @default(cuid())
+  id          String   @id @default(cuid())
   productionId String  @unique
-  production   Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  production  Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
   storyPlanId String
   storyPlan   StoryPlan? @relation(fields: [storyPlanId], references: [id], onDelete: SetNull)
 
-  title String
-  logline String
-  continuityWarnings Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  title               String
+  logline             String
+  continuityWarnings  Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   scenes ScreenplayScene[]
 }
 
 model ScreenplayScene {
-  id                String   @id @default(cuid())
-  productionId      String
-  production        Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
-  screenplayPlanId  String
-  screenplayPlan    ScreenplayPlan @relation(fields: [screenplayPlanId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  productionId     String
+  production       Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  screenplayPlanId String
+  screenplayPlan   ScreenplayPlan @relation(fields: [screenplayPlanId], references: [id], onDelete: Cascade)
 
-  sceneNumber       Int
-  heading           String
-  location          String
-  timeOfDay         String
-  visualBeat        String
-  action            String
-  dialogue          String
-  continuityNotes   Json
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  sceneNumber     Int
+  heading         String
+  location        String
+  timeOfDay       String
+  visualBeat      String
+  action          String
+  dialogue        String
+  continuityNotes Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([screenplayPlanId, sceneNumber])
 }

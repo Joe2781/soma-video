@@ -111,7 +111,10 @@ app.post('/api/productions/:id/plan', async (req: Request, res: Response, next: 
     });
 
     if (existing) {
-      return res.status(409).json({ error: 'A director plan already exists for this production.', storyPlanId: existing.id });
+      return res.status(409).json({
+        error: 'A director plan already exists for this production.',
+        storyPlanId: existing.id,
+      });
     }
 
     const plan = await generateDirectorPlan(production.idea, production.title, {
@@ -229,7 +232,7 @@ app.post('/api/productions/:id/screenplay', async (req: Request, res: Response, 
       genre: production.storyPlan.genre,
       tone: production.storyPlan.tone,
       premise: production.storyPlan.premise,
-      acts: Array.isArray(production.storyPlan.acts) ? production.storyPlan.acts as any[] : [],
+      acts: Array.isArray(production.storyPlan.acts) ? (production.storyPlan.acts as any[]) : [],
       scenes: production.storyPlan.scenePlans.map((scene) => ({
         sceneNumber: scene.sceneNumber,
         title: scene.title,
