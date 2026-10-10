@@ -2,7 +2,14 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { prisma } from '@soma/db';
-import { generateDirectorPlan, generateScreenplayPlan, validateContinuity } from '@soma/ai';
+import {
+  generateDirectorPlan,
+  generateScreenplayPlan,
+  validateContinuity,
+  generateProductionVideo,
+  pollVeoOperation,
+  buildProductionVideoPrompt,
+} from '@soma/ai';
 
 const app = express();
 
@@ -83,6 +90,7 @@ app.get('/api/productions/:id', async (req: Request, res: Response, next: NextFu
       include: {
         storyPlan: { include: { scenePlans: true, shotPlans: true } },
         screenplayPlan: { include: { scenes: true } },
+        videoAssets: true,
       },
     });
 
@@ -302,6 +310,179 @@ app.post('/api/productions/:id/screenplay', async (req: Request, res: Response, 
       screenplay,
       continuityWarnings,
       message: 'Screenplay generated, continuity validated, and persisted successfully.',
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get('/api/productions/:id/videos', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const assets = await prisma.videoAsset.findMany({
+      where: { productionId: req.params.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.json({ data: assets });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/productions/:id/render', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const production = await prisma.production.findUnique({
+      where: { id: req.params.id },
+      include: {
+        storyPlan: true,
+        screenplayPlan: { include: { scenes: true } },
+      },
+    });
+
+    if (!production) {
+      return res.status(404).json({ error: 'Production not found' });
+    }
+
+    const prompt = req.body?.prompt || buildProductionVideoPrompt({
+      title: production.title,
+      idea: production.idea,
+      storyPlan: production.storyPlan
+        ? {
+            title: production.storyPlan.title,
+            logline: production.storyPlan.logline,
+            premise: production.storyPlan.premise,
+            genre: production.storyPlan.genre,
+            tone: production.storyPlan.tone,
+            acts: Array.isArray(production.storyPlan.acts) ? (production.storyPlan.acts as any[]) : [],
+          }
+        : null,
+      screenplayPlan: production.screenplayPlan
+        ? {
+            title: production.screenplayPlan.title,
+            logline: production.screenplayPlan.logline,
+            scenes: production.screenplayPlan.scenes.map((scene) => ({
+              heading: scene.heading,
+              visualBeat: scene.visualBeat,
+              action: scene.action,
+            })),
+          }
+        : null,
+    });
+
+    const result = await generateProductionVideo(
+      {
+        title: production.title,
+        idea: production.idea,
+        storyPlan: production.storyPlan
+          ? {
+              title: production.storyPlan.title,
+              logline: production.storyPlan.logline,
+              premise: production.storyPlan.premise,
+              genre: production.storyPlan.genre,
+              tone: production.storyPlan.tone,
+              acts: Array.isArray(production.storyPlan.acts) ? (production.storyPlan.acts as any[]) : [],
+            }
+          : null,
+        screenplayPlan: production.screenplayPlan
+          ? {
+              title: production.screenplayPlan.title,
+              logline: production.screenplayPlan.logline,
+              scenes: production.screenplayPlan.scenes.map((scene) => ({
+                heading: scene.heading,
+                visualBeat: scene.visualBeat,
+                action: scene.action,
+              })),
+            }
+          : null,
+      },
+      {
+        apiKey: process.env.VEO_API_KEY ?? process.env.GEMINI_API_KEY,
+        model: process.env.VEO_MODEL,
+        aspectRatio: String(req.body?.aspectRatio ?? '16:9'),
+        durationSeconds: Number(req.body?.durationSeconds ?? 8),
+        negativePrompt: req.body?.negativePrompt,
+      }
+    );
+
+    const createdAsset = await prisma.videoAsset.create({
+      data: {
+        productionId: production.id,
+        title: production.title,
+        prompt,
+        model: result.model,
+        operationName: result.operationName,
+        status: result.status,
+        videoUrl: result.videoUrl ?? null,
+        metadata: result.metadata ?? {},
+      },
+    });
+
+    await prisma.production.update({
+      where: { id: production.id },
+      data: { status: 'rendering' },
+    });
+
+    return res.status(202).json({
+      productionId: production.id,
+      assetId: createdAsset.id,
+      operationName: result.operationName,
+      status: result.status,
+      videoUrl: result.videoUrl ?? null,
+      message: 'Veo video generation started asynchronously.',
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get('/api/productions/:id/render/:videoId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const asset = await prisma.videoAsset.findFirst({
+      where: { id: req.params.videoId, productionId: req.params.id },
+    });
+
+    if (!asset) {
+      return res.status(404).json({ error: 'Video asset not found.' });
+    }
+
+    if (!asset.operationName) {
+      return res.json({
+        id: asset.id,
+        status: asset.status,
+        videoUrl: asset.videoUrl,
+        complete: asset.status === 'succeeded',
+      });
+    }
+
+    const poll = await pollVeoOperation(asset.operationName, {
+      apiKey: process.env.VEO_API_KEY ?? process.env.GEMINI_API_KEY,
+    });
+
+    const nextStatus = poll.status === 'succeeded' ? 'succeeded' : poll.status === 'failed' ? 'failed' : poll.status === 'cancelled' ? 'cancelled' : asset.status === 'succeeded' ? 'succeeded' : 'processing';
+
+    const updatedAsset = await prisma.videoAsset.update({
+      where: { id: asset.id },
+      data: {
+        status: nextStatus,
+        videoUrl: poll.videoUrl ?? asset.videoUrl ?? null,
+        metadata: poll.metadata ?? asset.metadata ?? {},
+      },
+    });
+
+    if (poll.status === 'succeeded') {
+      await prisma.production.update({
+        where: { id: req.params.id },
+        data: { status: 'complete' },
+      });
+    }
+
+    return res.json({
+      id: updatedAsset.id,
+      operationName: asset.operationName,
+      status: updatedAsset.status,
+      videoUrl: updatedAsset.videoUrl,
+      done: poll.done,
+      error: poll.error,
+      metadata: updatedAsset.metadata,
     });
   } catch (error) {
     return next(error);

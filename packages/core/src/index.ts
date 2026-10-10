@@ -1,10 +1,28 @@
 export type ProductionStatus = 'draft' | 'story_planned' | 'screenplay_planned' | 'shot_planned' | 'rendering' | 'complete';
+export type VideoAssetStatus = 'queued' | 'processing' | 'succeeded' | 'failed' | 'cancelled';
 
 export type Production = {
   id: string;
   title: string;
   idea: string;
   status: ProductionStatus;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type VideoAsset = {
+  id: string;
+  productionId: string;
+  title: string;
+  prompt: string;
+  model: string;
+  operationName?: string | null;
+  status: VideoAssetStatus;
+  videoUrl?: string | null;
+  thumbnailUrl?: string | null;
+  durationSeconds?: number | null;
+  fileSizeBytes?: number | null;
+  metadata?: Record<string, any> | null;
   createdAt: Date;
   updatedAt: Date;
 };

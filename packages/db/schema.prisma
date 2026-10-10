@@ -19,6 +19,7 @@ model Production {
   screenplayPlan ScreenplayPlan?
   scenePlans     ScenePlan[]
   shotPlans      ShotPlan[]
+  videoAssets    VideoAsset[]
 }
 
 model StoryPlan {
@@ -120,4 +121,25 @@ model ShotPlan {
   updatedAt      DateTime @updatedAt
 
   @@unique([scenePlanId, shotNumber])
+}
+
+model VideoAsset {
+  id             String   @id @default(cuid())
+  productionId   String
+  production     Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+
+  title          String
+  prompt         String
+  model          String
+  operationName  String?
+  status         String   @default("queued")
+  videoUrl       String?
+  thumbnailUrl   String?
+  durationSeconds Int?
+  fileSizeBytes  Int?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([productionId, status])
 }

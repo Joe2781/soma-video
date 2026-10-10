@@ -93,6 +93,26 @@ export type ContinuityWarning = z.infer<typeof ContinuityWarningSchema>;
 export type ShotPlanItem = z.infer<typeof ShotPlanItemSchema>;
 export type ShotPlan = z.infer<typeof ShotPlanSchema>;
 
+export type VeoVideoStatus = 'queued' | 'processing' | 'succeeded' | 'failed' | 'cancelled';
+
+export type VeoOperationState = {
+  name: string;
+  done: boolean;
+  status: VeoVideoStatus;
+  error?: { message?: string; code?: number; details?: any[] } | null;
+  videoUrl?: string | null;
+  metadata?: Record<string, any>;
+};
+
+export type VeoVideoGenerationResult = {
+  operationName: string;
+  status: VeoVideoStatus;
+  model: string;
+  prompt: string;
+  videoUrl?: string | null;
+  metadata?: Record<string, any>;
+};
+
 function normalizeGeminiResponse(raw: string): DirectorPlan {
   const cleaned = raw
     .replace(/^```json\s*/i, '')
@@ -423,3 +443,267 @@ Return a single JSON object only.
   const parsed = JSON.parse(cleaned) as unknown;
   return ShotPlanSchema.parse(parsed);
 }
+
+function getVeoApiKey(options?: { apiKey?: string }) {
+  return options?.apiKey ?? process.env.VEO_API_KEY ?? process.env.GEMINI_API_KEY;
+}
+
+function extractVeoVideoUri(payload: any): string | null {
+  const candidates = [
+    payload?.response?.generatedVideos,
+    payload?.response?.generated_videos,
+    payload?.response?.videos,
+    payload?.response?.generatedVideo,
+    payload?.response?.generated_video,
+    payload?.generatedVideos,
+    payload?.generated_videos,
+    payload?.videos,
+  ];
+
+  for (const candidate of candidates) {
+    const items = Array.isArray(candidate) ? candidate : candidate ? [candidate] : [];
+    for (const item of items) {
+      const values = [
+        item?.uri,
+        item?.videoUri,
+        item?.video_uri,
+        item?.gcsUri,
+        item?.gcs_uri,
+        item?.url,
+        item?.mediaUri,
+        item?.media_uri,
+        item?.video?.uri,
+        item?.video?.url,
+        item?.video?.gcsUri,
+      ];
+      const found = values.find((value) => typeof value === 'string' && value.trim().length > 0);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+function resolveVeoStatus(payload: any): VeoVideoStatus {
+  const state = String(payload?.state ?? payload?.status ?? '').toUpperCase();
+  const done = Boolean(payload?.done);
+
+  if (payload?.error || payload?.status === 'FAILED' || state === 'FAILED') {
+    return 'failed';
+  }
+
+  if (payload?.status === 'CANCELLED' || state === 'CANCELLED') {
+    return 'cancelled';
+  }
+
+  if (done || state === 'SUCCEEDED' || state === 'COMPLETED') {
+    if (extractVeoVideoUri(payload)) {
+      return 'succeeded';
+    }
+    return 'failed';
+  }
+
+  if (state === 'PENDING' || state === 'QUEUED' || payload?.status === 'QUEUED') {
+    return 'queued';
+  }
+
+  if (state === 'RUNNING' || state === 'PROCESSING' || payload?.status === 'PROCESSING') {
+    return 'processing';
+  }
+
+  return done ? 'succeeded' : 'processing';
+}
+
+export async function startVeoGeneration(
+  prompt: string,
+  options?: {
+    model?: string;
+    apiKey?: string;
+    aspectRatio?: string;
+    negativePrompt?: string;
+    durationSeconds?: number;
+    personGeneration?: string;
+  }
+): Promise<VeoVideoGenerationResult> {
+  const apiKey = getVeoApiKey(options);
+  if (!apiKey) {
+    throw new Error('VEO_API_KEY is not configured. Set the real Google Veo API key before generating videos.');
+  }
+
+  if (!prompt || !prompt.trim()) {
+    throw new Error('A non-empty prompt is required before generating a Veo video.');
+  }
+
+  const model = options?.model ?? process.env.VEO_MODEL ?? 'veo-3.1-generate-preview';
+  const body: Record<string, any> = {
+    prompt: prompt.trim(),
+    ...(options?.negativePrompt ? { negativePrompt: options.negativePrompt.trim() } : {}),
+    ...(options?.aspectRatio ? { aspectRatio: options.aspectRatio } : { aspectRatio: '16:9' }),
+    ...(typeof options?.durationSeconds === 'number' ? { durationSeconds: options.durationSeconds } : { durationSeconds: 8 }),
+    ...(options?.personGeneration ? { personGeneration: options.personGeneration } : { personGeneration: 'allow_adult' }),
+  };
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateVideo?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new Error(`Veo generation failed (${response.status}): ${raw}`);
+  }
+
+  const payload = (await response.json()) as any;
+  const operationName = payload?.name ?? payload?.operation?.name ?? payload?.operationName;
+
+  if (!operationName) {
+    throw new Error('Veo API did not return an operation name for the video job.');
+  }
+
+  const status = resolveVeoStatus(payload);
+  return {
+    operationName,
+    status,
+    model,
+    prompt,
+    videoUrl: extractVeoVideoUri(payload),
+    metadata: payload,
+  };
+}
+
+export async function pollVeoOperation(
+  operationName: string,
+  options?: { apiKey?: string }
+): Promise<VeoOperationState> {
+  const apiKey = getVeoApiKey(options);
+  if (!apiKey) {
+    throw new Error('VEO_API_KEY is not configured. Set the real Google Veo API key to poll video operations.');
+  }
+
+  if (!operationName || !operationName.trim()) {
+    throw new Error('operationName is required when polling a Veo job.');
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/${encodeURIComponent(operationName)}?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new Error(`Veo operation polling failed (${response.status}): ${raw}`);
+  }
+
+  const payload = (await response.json()) as any;
+  const status = resolveVeoStatus(payload);
+  const error = payload?.error ? { message: payload.error?.message, code: payload.error?.code, details: payload.error?.details } : null;
+
+  return {
+    name: operationName,
+    done: Boolean(payload?.done),
+    status,
+    error,
+    videoUrl: extractVeoVideoUri(payload),
+    metadata: payload,
+  };
+}
+
+export function buildProductionVideoPrompt(
+  production: {
+    title: string;
+    idea: string;
+    storyPlan?: { title?: string; logline?: string; premise?: string; genre?: string; tone?: string; acts?: Array<{ title?: string; summary?: string }> } | null;
+    screenplayPlan?: { title?: string; logline?: string; scenes?: Array<{ heading?: string; visualBeat?: string; action?: string }> } | null;
+  }
+): string {
+  const beats = production.storyPlan?.acts?.slice(0, 2).map((act) => act?.title ?? '').filter(Boolean) ?? [];
+  const scenes = production.screenplayPlan?.scenes?.slice(0, 3).map((scene) => scene?.visualBeat ?? scene?.heading ?? '').filter(Boolean) ?? [];
+
+  const base = `Create a cinematic 8-second video clip based on this film concept.`;
+  const title = `Title: ${production.title || production.storyPlan?.title || 'Untitled production'}.`;
+  const idea = `Concept: ${production.idea}.`;
+  const logline = production.storyPlan?.logline ? `Logline: ${production.storyPlan.logline}.` : '';
+  const premise = production.storyPlan?.premise ? `Premise: ${production.storyPlan.premise}.` : '';
+  const visualBeats = scenes.length > 0 ? `Visual beats: ${scenes.join(' • ')}.` : '';
+  const actSummary = beats.length > 0 ? `Story arc: ${beats.join(' -> ')}.` : '';
+
+  return [base, title, idea, logline, premise, actSummary, visualBeats]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+export async function generateProductionVideo(
+  production: {
+    title: string;
+    idea: string;
+    storyPlan?: { title?: string; logline?: string; premise?: string; genre?: string; tone?: string; acts?: Array<{ title?: string; summary?: string }> } | null;
+    screenplayPlan?: { title?: string; logline?: string; scenes?: Array<{ heading?: string; visualBeat?: string; action?: string }> } | null;
+  },
+  options?: {
+    model?: string;
+    apiKey?: string;
+    aspectRatio?: string;
+    durationSeconds?: number;
+    negativePrompt?: string;
+  }
+): Promise<VeoVideoGenerationResult> {
+  return startVeoGeneration(buildProductionVideoPrompt(production), options);
+}
+
+export async function waitForVeoCompletion(
+  operationName: string,
+  options?: {
+    apiKey?: string;
+    intervalMs?: number;
+    timeoutMs?: number;
+  }
+): Promise<VeoOperationState> {
+  const intervalMs = options?.intervalMs ?? 5000;
+  const timeoutMs = options?.timeoutMs ?? 600000;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = await pollVeoOperation(operationName, { apiKey: options?.apiKey });
+    if (state.done) {
+      return state;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error(`Timed out waiting for Veo operation ${operationName} to complete.`);
+}
+
+export async function pollVeoUntilComplete(
+  operationName: string,
+  options?: {
+    apiKey?: string;
+    intervalMs?: number;
+    timeoutMs?: number;
+  }
+): Promise<VeoOperationState> {
+  return waitForVeoCompletion(operationName, options);
+}
+
+export function isVeoSucceeded(status: VeoVideoStatus | undefined): boolean {
+  return status === 'succeeded';
+}
+
+export function isVeoFailed(status: VeoVideoStatus | undefined): boolean {
+  return status === 'failed' || status === 'cancelled';
+}
+
+export async function fetchVeoVideoUrl(
+  operationName: string,
+  options?: { apiKey?: string }
+): Promise<string | null> {
+  const state = await pollVeoOperation(operationName, { apiKey: options?.apiKey });
+  return state.videoUrl ?? null;
+}
+
+export { normalizeGeminiResponse };
